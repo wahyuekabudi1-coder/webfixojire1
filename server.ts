@@ -586,19 +586,33 @@ app.post('/api/auth/login', (req, res) => {
 // ArtoPay Official Production Gateway API Routes
 // -------------------------------------------------------------
 
+function getSafeCredentialInfo(val: string | undefined) {
+  if (!val) return { exists: false, length: 0, prefix: '-', suffix: '-' };
+  const clean = val.replace(/^["']|["']$/g, '').trim();
+  if (!clean) return { exists: false, length: 0, prefix: '-', suffix: '-' };
+  const prefix = clean.substring(0, 4);
+  const suffix = clean.length >= 4 ? clean.substring(clean.length - 4) : clean;
+  return { exists: true, length: clean.length, prefix, suffix };
+}
+
 app.get('/api/artopay/config', (req, res) => {
   const rawSecretKey = process.env.ARTOPAY_SECRET_KEY || '';
   const secretKey = rawSecretKey.replace(/^["']|["']$/g, '').trim();
 
   const envMode = process.env.ARTOPAY_ENV || (process.env.ARTOPAY_SANDBOX === 'false' ? 'production' : 'sandbox');
-  const baseUrl = process.env.ARTOPAY_API_BASE_URL || (envMode === 'production' ? 'https://api.arto-pay.com' : 'https://api-sandbox.arto-pay.com');
-  const publicKey = process.env.VITE_ARTOPAY_PUBLIC_KEY || process.env.ARTOPAY_PUBLIC_KEY || '';
+  const baseUrl = process.env.ARTOPAY_API_BASE_URL || (envMode === 'production' ? 'https://api.artopay.online' : 'https://api-sandbox.arto-pay.com');
+  const rawPublicKey = process.env.VITE_ARTOPAY_PUBLIC_KEY || process.env.ARTOPAY_PUBLIC_KEY || '';
+  const publicKey = rawPublicKey.replace(/^["']|["']$/g, '').trim();
+  const rawBu = process.env.ARTOPAY_BUSINESS_UNIT_CODE || process.env.ARTOPAY_BUSINESS_UNIT || '';
+  const businessUnitCode = rawBu.replace(/^["']|["']$/g, '').trim();
 
   res.json({
     isConfigured: !!secretKey,
     env: envMode,
     apiBaseUrl: baseUrl,
-    publicKey: publicKey ? `${publicKey.substring(0, 6)}...` : '',
+    secretKeyInfo: getSafeCredentialInfo(secretKey),
+    publicKeyInfo: getSafeCredentialInfo(publicKey),
+    businessUnitInfo: getSafeCredentialInfo(businessUnitCode),
     message: secretKey
       ? "ArtoPay Server Secret Key is configured."
       : "ARTOPAY_SECRET_KEY is missing. Please add ARTOPAY_SECRET_KEY in Vercel/Environment Variables."
@@ -607,7 +621,16 @@ app.get('/api/artopay/config', (req, res) => {
 
 app.post(['/api/artopay/payment-intent', '/artopay/payment-intent', '/api/payment/create-intent'], async (req, res) => {
   try {
-    let { orderId, amount, currency = 'IDR', description, customerId, metadata, customerName, customerEmail, customerPhone } = req.body || {};
+    let bodyData = req.body;
+    if (typeof bodyData === 'string') {
+      try {
+        bodyData = JSON.parse(bodyData);
+      } catch (e) {
+        bodyData = {};
+      }
+    }
+
+    let { orderId, amount, currency = 'IDR', description, customerId, metadata, customerName, customerEmail, customerPhone } = bodyData || {};
 
     if (!orderId) {
       return res.status(400).json({ error: 'orderId parameter is required' });
@@ -620,20 +643,37 @@ app.post(['/api/artopay/payment-intent', '/artopay/payment-intent', '/api/paymen
 
     const rawSecretKey = process.env.ARTOPAY_SECRET_KEY || '';
     const secretKey = rawSecretKey.replace(/^["']|["']$/g, '').trim();
-
-    // SECURITY RULE: Reject request if Secret Key is missing. DO NOT produce fake/mock payment!
-    if (!secretKey) {
-      console.error('[ArtoPay Server Error] ARTOPAY_SECRET_KEY environment variable is not configured.');
-      return res.status(400).json({
-        error: 'Integrasi ArtoPay belum siap. ARTOPAY_SECRET_KEY belum diisi di Environment Variables Vercel/Server. Pembayaran tidak dapat diproses.'
-      });
-    }
-
     const envMode = process.env.ARTOPAY_ENV || (process.env.ARTOPAY_SANDBOX === 'false' ? 'production' : 'sandbox');
     const baseUrl = process.env.ARTOPAY_API_BASE_URL || (envMode === 'production' ? 'https://api.artopay.online' : 'https://api-sandbox.arto-pay.com');
 
     const rawPublicKey = process.env.VITE_ARTOPAY_PUBLIC_KEY || process.env.ARTOPAY_PUBLIC_KEY || '';
     const publicKey = rawPublicKey.replace(/^["']|["']$/g, '').trim();
+
+    const secretKeyInfo = getSafeCredentialInfo(secretKey);
+    const publicKeyInfo = getSafeCredentialInfo(publicKey);
+
+    // CATEGORY A: SECURITY & CONFIGURATION RULE - Reject request if Secret Key is missing in process.env
+    if (!secretKey) {
+      const configErrorMsg = 'Integrasi ArtoPay belum siap. ARTOPAY_SECRET_KEY belum diisi di Environment Variables Vercel/Server Production.';
+      console.error('[ArtoPay Server Error]', configErrorMsg, {
+        envMode,
+        baseUrl,
+        secretKeyInfo,
+        publicKeyInfo
+      });
+
+      return res.status(500).json({
+        category: 'ENVIRONMENT_VARIABLE_MISSING',
+        error: configErrorMsg,
+        details: 'Variabel ARTOPAY_SECRET_KEY bernilai undefined/kosong pada serverless runtime Vercel.',
+        envCheck: {
+          ARTOPAY_ENV: envMode,
+          ARTOPAY_API_BASE_URL: baseUrl,
+          hasSecretKey: false,
+          hasPublicKey: !!publicKey
+        }
+      });
+    }
 
     // Check DB for existing order to avoid double payment or amount tampering
     const db = readDB();
@@ -709,45 +749,74 @@ app.post(['/api/artopay/payment-intent', '/artopay/payment-intent', '/api/paymen
 
     // Primary endpoint: /v1/payment-intents
     const endpointV1 = `${baseUrl.replace(/\/+$/, '')}/v1/payment-intents`;
-    console.log(`[ArtoPay Backend] Sending Payment Intent POST to ${endpointV1} with X-Secret-Key authentication`);
+    console.log(`[ArtoPay Backend Request] Target: ${endpointV1} | Env: ${envMode} | SecretKey: ${secretKeyInfo.prefix}...${secretKeyInfo.suffix} (len:${secretKeyInfo.length}) | PublicKey: ${publicKeyInfo.prefix}...${publicKeyInfo.suffix} (len:${publicKeyInfo.length})`);
 
-    let response = await fetch(endpointV1, {
-      method: 'POST',
-      headers: candidateHeaders,
-      body: requestBody
-    });
+    let response: Response;
 
-    // Fallback to /v1.1/payment-intents if 404
-    if (response.status === 404) {
-      const endpointV11 = `${baseUrl.replace(/\/+$/, '')}/v1.1/payment-intents`;
-      console.log(`[ArtoPay Backend] /v1 endpoint returned 404, trying fallback ${endpointV11}...`);
-      response = await fetch(endpointV11, {
+    // CATEGORY B: OUTBOUND NETWORK/FETCH HANDLER
+    try {
+      response = await fetch(endpointV1, {
         method: 'POST',
         headers: candidateHeaders,
         body: requestBody
       });
+
+      // Fallback to /v1.1/payment-intents if 404
+      if (response.status === 404) {
+        const endpointV11 = `${baseUrl.replace(/\/+$/, '')}/v1.1/payment-intents`;
+        console.log(`[ArtoPay Backend Fallback] /v1 endpoint returned 404, trying fallback ${endpointV11}...`);
+        response = await fetch(endpointV11, {
+          method: 'POST',
+          headers: candidateHeaders,
+          body: requestBody
+        });
+      }
+    } catch (fetchErr: any) {
+      console.error('[ArtoPay Network Fetch Exception]:', fetchErr);
+      return res.status(500).json({
+        category: 'NETWORK_FETCH_ERROR',
+        error: 'Gagal terhubung ke server ArtoPay Payment Gateway (Outbound HTTPS Network Error).',
+        details: fetchErr.message || String(fetchErr),
+        targetEndpoint: endpointV1,
+        baseUrl: baseUrl
+      });
     }
 
+    // CATEGORY C & D: HTTP RESPONSE CODES FROM ARTOPAY
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`[ArtoPay API Gateway Error ${response.status}]:`, errorText);
+      console.error(`[ArtoPay API Gateway Response Error HTTP ${response.status}]:`, errorText);
 
+      let category = 'ARTOPAY_API_ERROR';
       let userFriendlyError = `Gagal membuat transaksi ArtoPay (${response.status}). Periksa kredensial API key atau koneksi ArtoPay.`;
 
       if (response.status === 401) {
+        category = 'ARTOPAY_UNAUTHORIZED_401';
         userFriendlyError = 'Autentikasi ArtoPay gagal (401 Unauthorized). Silakan periksa kembali ARTOPAY_SECRET_KEY di Environment Variables Vercel/Server Anda.';
       } else if (response.status === 403) {
+        category = 'ARTOPAY_FORBIDDEN_403';
         userFriendlyError = 'Akses ArtoPay ditolak (403 Forbidden). Pastikan IP server atau domain Anda diizinkan di dashboard ArtoPay.';
+      } else if (response.status === 400) {
+        category = 'ARTOPAY_BAD_REQUEST_400';
+        userFriendlyError = 'Request Payment Intent ditolak ArtoPay (400 Bad Request).';
+      } else if (response.status >= 500) {
+        category = 'ARTOPAY_SERVER_ERROR_500';
+        userFriendlyError = 'Server ArtoPay Gateway mengalami gangguan internal (HTTP 500).';
       }
 
       return res.status(response.status >= 400 && response.status < 600 ? response.status : 500).json({
+        category,
         error: userFriendlyError,
+        status: response.status,
         details: errorText
       });
     }
 
     const data: any = await response.json();
-    console.log('[ArtoPay API Gateway Response]:', data);
+    console.log('[ArtoPay API Gateway Response Success]:', {
+      id: data.id || data.paymentId || data.responseData?.id,
+      orderId: data.orderId || data.responseData?.orderId
+    });
 
     const resData = data.responseData || data.data || data;
 
@@ -777,10 +846,12 @@ app.post(['/api/artopay/payment-intent', '/artopay/payment-intent', '/api/paymen
       publicKey: publicKey || resData.publicKey || ''
     });
   } catch (error: any) {
-    console.error('[ArtoPay Payment Intent Exception]:', error);
+    // CATEGORY E: INTERNAL SMART JOURNEY SERVER ERROR
+    console.error('[Smart Journey Server Internal Exception]:', error);
     return res.status(500).json({
-      error: 'Terjadi kesalahan sistem saat menghubungi ArtoPay Payment Gateway.',
-      details: error.message
+      category: 'INTERNAL_SERVER_ERROR',
+      error: 'Terjadi kesalahan sistem internal saat memproses request pembayaran.',
+      details: error.message || String(error)
     });
   }
 });
