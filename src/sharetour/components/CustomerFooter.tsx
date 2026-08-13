@@ -201,7 +201,7 @@ export default function CustomerFooter({ onNavigate }: CustomerFooterProps) {
             onClick={handleCopyrightClick}
             className="cursor-pointer select-none transition-colors duration-300 py-1"
           >
-            © 2026 <span className="font-medium text-gray-400">PT. Sawah Jaya Trans</span>. All Rights Reserved.
+            © 2026 <span className="font-medium text-gray-400">PT Sawah Jaya Trans 1</span>. All Rights Reserved.
           </div>
           <div className="flex space-x-4">
             <a href="#" className="hover:text-white transition-colors">Privacy Policy</a>

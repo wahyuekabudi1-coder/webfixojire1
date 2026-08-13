@@ -356,7 +356,7 @@ export default function Footer() {
         {/* 4. COPYRIGHT & DEV ADMIN ACCESS BUTTONS */}
         <div className="border-t border-neutral-200 mt-6 pt-6 flex flex-col md:flex-row items-center justify-between gap-4 text-xs text-neutral-500 font-medium">
           <div>
-            © 2026 <span className="font-semibold text-neutral-700">PT. Sawah Jaya Trans</span>. All Rights Reserved.
+            © 2026 <span className="font-semibold text-neutral-700">PT Sawah Jaya Trans 1</span>. All Rights Reserved.
           </div>
 
           {/* Development / Testing Admin Quick Access Buttons */}
