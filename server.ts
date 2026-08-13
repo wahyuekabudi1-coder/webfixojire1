@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
-import { Trip, Batch, Booking, DatabaseState } from './src/sharetour/types';
+import type { Trip, Batch, Booking, DatabaseState } from './src/sharetour/types.ts';
 
 // Load environment variables
 dotenv.config();
